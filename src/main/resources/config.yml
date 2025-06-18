@@ -5,10 +5,15 @@ particle:
   default-density: medium   # Options: low, medium, high
   update-interval: 60       # Ticks between particle updates (20 ticks = 1 second)
   show-to-owners-only: true
+  max-particles-per-player: 500 # Maximum particles per player per update
 
 regeneration:
   batch-size: 2            # Number of blocks to regenerate per tick
   save-interval: 6000      # Ticks between automatic data saves (5 minutes)
+  max-tracked-blocks: 10000 # Maximum number of tracked broken blocks
+
+area:
+  max-areas-per-player: 3  # Maximum build areas per player
 
 data:
   unload-offline-areas: true

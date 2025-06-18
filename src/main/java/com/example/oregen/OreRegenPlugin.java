@@ -11,27 +11,23 @@ import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.TabExecutor;
-import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.util.Vector;
-
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 import org.bukkit.enchantments.Enchantment;
 
-public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor {
+public class OreRegenPlugin extends JavaPlugin implements Listener {
 
     // Data structures
     private static class Area implements Serializable {
@@ -63,7 +59,8 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         Material type;
         long breakTime;
         public OreRecord(Location loc, Material type, long breakTime) {
-            this.world = loc.getWorld().getName();
+            World worldObj = loc.getWorld();
+            this.world = (worldObj != null) ? worldObj.getName() : "world";
             this.x = loc.getBlockX();
             this.y = loc.getBlockY();
             this.z = loc.getBlockZ();
@@ -72,6 +69,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         }
         public Location getLocation() {
             World w = Bukkit.getWorld(world);
+            if (w == null) return null;
             return new Location(w, x, y, z);
         }
     }
@@ -79,7 +77,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
     // Player selection state
     private final Map<UUID, Location> selection1 = new HashMap<>();
     private final Map<UUID, Location> selection2 = new HashMap<>();
-    private final Map<UUID, String> areaNames = new HashMap<>();
+    private final Map<UUID, String> areaNames = new HashMap<>(); // Restored for naming mode
     private final List<Area> buildAreas = new ArrayList<>();
     private final List<OreRecord> brokenOres = Collections.synchronizedList(new ArrayList<>());
 
@@ -98,60 +96,64 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
     private final Map<Area, Integer> areaParticleDensity = new HashMap<>();
 
     // Optimization config values
-    private String defaultParticleDensity;
     private int particleUpdateInterval;
     private boolean showParticlesToOwnersOnly;
     private int regenBatchSize;
     private int saveInterval;
-    private boolean unloadOfflineAreas;
+    private int maxParticlesPerPlayer;
+    private int maxTrackedBlocks;
+    private int maxAreasPerPlayer;
+
+    // Track players in corner selection mode
+    private final Set<UUID> selectingCorners = new HashSet<>();
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         reloadConfig();
-        defaultParticleDensity = getConfig().getString("particle.default-density", "medium");
         particleUpdateInterval = getConfig().getInt("particle.update-interval", 5);
         showParticlesToOwnersOnly = getConfig().getBoolean("particle.show-to-owners-only", true);
         regenBatchSize = getConfig().getInt("regeneration.batch-size", 2);
         saveInterval = getConfig().getInt("regeneration.save-interval", 6000);
-        unloadOfflineAreas = getConfig().getBoolean("data.unload-offline-areas", true);
+        maxParticlesPerPlayer = getConfig().getInt("particle.max-particles-per-player", 500);
+        maxTrackedBlocks = getConfig().getInt("regeneration.max-tracked-blocks", 10000);
+        maxAreasPerPlayer = getConfig().getInt("area.max-areas-per-player", 3);
         Bukkit.getPluginManager().registerEvents(this, this);
-        loadData();
+        loadDataAsync(); // Use async load
         startOreRegenTask();
         startParticleTask();
         // Register /buildarea command to open the GUI
-        if (getCommand("buildarea") != null) {
-            getCommand("buildarea").setExecutor((sender, command, label, args) -> {
-                if (sender instanceof Player player) {
-                    openBuildAreaGUI(player);
-                    return true;
-                }
-                sender.sendMessage("Players only.");
+        getCommand("buildarea").setExecutor((sender, command, label, args) -> {
+            if (sender instanceof Player player) {
+                openBuildAreaGUI(player);
                 return true;
-            });
-        }
+            }
+            sender.sendMessage("Players only.");
+            return true;
+        });
         // Register /buildareaadmin command for admin GUI
-        if (getCommand("buildareaadmin") != null) {
-            getCommand("buildareaadmin").setExecutor((sender, command, label, args) -> {
-                if (sender instanceof Player player) {
-                    if (!player.hasPermission("oregen.admin")) {
-                        player.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
-                        return true;
-                    }
-                    openAdminAreaListGUI(player);
+        getCommand("buildareaadmin").setExecutor((sender, command, label, args) -> {
+            if (sender instanceof Player player) {
+                if (!player.hasPermission("oregen.admin")) {
+                    player.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
                     return true;
                 }
-                sender.sendMessage("Players only.");
+                openAdminAreaListGUI(player);
                 return true;
-            });
-        }
-        // Schedule periodic data save
-        Bukkit.getScheduler().runTaskTimer(this, this::saveData, saveInterval, saveInterval);
+            }
+            sender.sendMessage("Players only.");
+            return true;
+        });
+        // Schedule periodic async data save
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+            saveData();
+            unloadOfflinePlayerData();
+        }, saveInterval, saveInterval);
     }
 
     @Override
     public void onDisable() {
-        saveData();
+        saveDataAsync(); // Use async save
     }
 
     // Block break event (track all blocks outside build areas)
@@ -162,6 +164,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         Location loc = block.getLocation();
         if (isInAnyBuildArea(loc)) return; // Don't track inside build areas
         brokenOres.add(new OreRecord(loc, type, System.currentTimeMillis()));
+        enforceMaxTrackedBlocks();
     }
 
     // Particle display when player is inside or near their area
@@ -172,7 +175,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         if (area == null) return;
         Location loc = p.getLocation();
         boolean inside = area.contains(loc);
-        boolean near = isNearAreaBoundary(loc, area, 3);
         if (inside) {
             showAreaParticles(p, area);
             if (!playersInArea.contains(p.getUniqueId())) {
@@ -182,8 +184,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         } else {
             playersInArea.remove(p.getUniqueId());
         }
-        // Debug: show when checking position
-        // p.sendMessage(ChatColor.GRAY + "[DEBUG] Checked area: inside=" + inside + ", near=" + near);
     }
 
     // Helper: Is location in any build area?
@@ -231,25 +231,32 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         int minZ = Math.min(area.corner1.getBlockZ(), area.corner2.getBlockZ());
         int maxZ = Math.max(area.corner1.getBlockZ(), area.corner2.getBlockZ());
         World w = p.getWorld();
+        int particleCount = 0;
         // Top and bottom faces
         for (int x = minX; x <= maxX; x += step) {
             for (int z = minZ; z <= maxZ; z += step) {
+                if (particleCount >= maxParticlesPerPlayer) return;
                 w.spawnParticle(pt, x + 0.5, minY + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
                 w.spawnParticle(pt, x + 0.5, maxY + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
+                particleCount += 2;
             }
         }
         // Side faces (minX, maxX)
         for (int y = minY; y <= maxY; y += step) {
             for (int z = minZ; z <= maxZ; z += step) {
+                if (particleCount >= maxParticlesPerPlayer) return;
                 w.spawnParticle(pt, minX + 0.5, y + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
                 w.spawnParticle(pt, maxX + 0.5, y + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
+                particleCount += 2;
             }
         }
         // Side faces (minZ, maxZ)
         for (int y = minY; y <= maxY; y += step) {
             for (int x = minX; x <= maxX; x += step) {
+                if (particleCount >= maxParticlesPerPlayer) return;
                 w.spawnParticle(pt, x + 0.5, y + 0.5, minZ + 0.5, 2, 0, 0, 0, 0, null);
                 w.spawnParticle(pt, x + 0.5, y + 0.5, maxZ + 0.5, 2, 0, 0, 0, 0, null);
+                particleCount += 2;
             }
         }
     }
@@ -298,7 +305,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
             out.writeObject(new ArrayList<>(buildAreas));
             out.writeObject(new ArrayList<>(brokenOres));
         } catch (IOException e) {
-            e.printStackTrace();
+            getLogger().log(Level.WARNING, "[ResourceRegen] Data save/load error", e);
         }
     }
     @SuppressWarnings("unchecked")
@@ -311,12 +318,52 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
             brokenOres.clear();
             brokenOres.addAll((List<OreRecord>) in.readObject());
         } catch (Exception e) {
-            e.printStackTrace();
+            getLogger().log(Level.WARNING, "[ResourceRegen] Data load error", e);
         }
+    }
+
+    // Async data save
+    private void saveDataAsync() {
+        Bukkit.getScheduler().runTaskAsynchronously(this, this::saveData);
+    }
+    // Async data load
+    private void loadDataAsync() {
+        Bukkit.getScheduler().runTaskAsynchronously(this, this::loadData);
+    }
+
+    // Unload data for offline players if enabled
+    private void unloadOfflinePlayerData() {
+        Set<UUID> online = new HashSet<>();
+        for (Player p : Bukkit.getOnlinePlayers()) online.add(p.getUniqueId());
+        buildAreas.removeIf(area -> !online.contains(area.owner));
+        // Optionally, also clear per-player settings
+        particleDensity.keySet().removeIf(uuid -> !online.contains(uuid));
+        particleType.keySet().removeIf(uuid -> !online.contains(uuid));
+        selection1.keySet().removeIf(uuid -> !online.contains(uuid));
+        selection2.keySet().removeIf(uuid -> !online.contains(uuid));
+    }
+
+    // Enforce max tracked blocks
+    private void enforceMaxTrackedBlocks() {
+        while (brokenOres.size() > maxTrackedBlocks) {
+            brokenOres.remove(0);
+        }
+    }
+    // Enforce max areas per player
+    private boolean canAddArea(UUID uuid) {
+        int count = 0;
+        for (Area area : buildAreas) {
+            if (area.owner.equals(uuid)) count++;
+        }
+        return count < maxAreasPerPlayer;
     }
 
     // GUI for build area management with density/type/delete options
     private void openBuildAreaGUI(Player player) {
+        if (!canAddArea(player.getUniqueId())) {
+            player.sendMessage(ChatColor.RED + "You have reached the maximum number of build areas (" + maxAreasPerPlayer + ").");
+            return;
+        }
         Inventory gui = Bukkit.createInventory(null, 27, ChatColor.GOLD + "Build Area Manager");
         // Border with black stained glass
         ItemStack border = new ItemStack(Material.BLACK_STAINED_GLASS_PANE);
@@ -328,32 +375,16 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         for (int i = 0; i < 27; i++) {
             if (i < 9 || i > 17 || i % 9 == 0 || i % 9 == 8) gui.setItem(i, border);
         }
-        // Set Corner 1
-        ItemStack set1 = new ItemStack(Material.LIME_WOOL);
-        ItemMeta set1Meta = set1.getItemMeta();
-        if (set1Meta != null) {
-            set1Meta.setDisplayName(ChatColor.GREEN + "Set Corner 1");
-            Location c1 = selection1.get(player.getUniqueId());
-            List<String> lore1 = new ArrayList<>();
-            if (c1 != null) lore1.add(ChatColor.GRAY + "Current: " + c1.getBlockX() + ", " + c1.getBlockY() + ", " + c1.getBlockZ());
-            lore1.add(ChatColor.YELLOW + "Click to set to your location");
-            set1Meta.setLore(lore1);
-            set1.setItemMeta(set1Meta);
+        // Set Corners (wand)
+        ItemStack wandBtn = new ItemStack(Material.STICK);
+        ItemMeta wandMeta = wandBtn.getItemMeta();
+        if (wandMeta != null) {
+            wandMeta.setDisplayName(ChatColor.GREEN + "Set Corners (Wand)");
+            wandMeta.setLore(Arrays.asList(ChatColor.YELLOW + "Click to receive a wand", ChatColor.GRAY + "Left: Corner 1, Right: Corner 2"));
+            wandBtn.setItemMeta(wandMeta);
         }
-        gui.setItem(10, set1);
-        // Set Corner 2
-        ItemStack set2 = new ItemStack(Material.LIME_WOOL);
-        ItemMeta set2Meta = set2.getItemMeta();
-        if (set2Meta != null) {
-            set2Meta.setDisplayName(ChatColor.GREEN + "Set Corner 2");
-            Location c2 = selection2.get(player.getUniqueId());
-            List<String> lore2 = new ArrayList<>();
-            if (c2 != null) lore2.add(ChatColor.GRAY + "Current: " + c2.getBlockX() + ", " + c2.getBlockY() + ", " + c2.getBlockZ());
-            lore2.add(ChatColor.YELLOW + "Click to set to your location");
-            set2Meta.setLore(lore2);
-            set2.setItemMeta(set2Meta);
-        }
-        gui.setItem(16, set2);
+        gui.setItem(10, wandBtn);
+        gui.setItem(16, null); // Remove old button
         // Name Area
         ItemStack name = new ItemStack(Material.NAME_TAG);
         ItemMeta nameMeta = name.getItemMeta();
@@ -435,16 +466,19 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
             off.setItemMeta(offMeta);
         }
         gui.setItem(23, off);
-        // Delete Area
+        // Delete Area button (active if player has an area)
+        Area area = getPlayerArea(player.getUniqueId());
         ItemStack delete = new ItemStack(Material.RED_STAINED_GLASS_PANE);
         ItemMeta delMeta = delete.getItemMeta();
         if (delMeta != null) {
             delMeta.setDisplayName(ChatColor.RED + "Delete Build Area");
             delMeta.setLore(Collections.singletonList(ChatColor.DARK_RED + "Click to delete your area"));
+            if (area != null) delMeta.addEnchant(Enchantment.DURABILITY, 1, true);
             delete.setItemMeta(delMeta);
         }
         gui.setItem(26, delete);
         player.openInventory(gui);
+        openGUIs.put(player.getUniqueId(), GUIType.PLAYER);
     }
 
     // Admin GUI: List all build areas
@@ -546,7 +580,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         ItemMeta ptDenMeta = ptDensity.getItemMeta();
         if (ptDenMeta != null) {
             ptDenMeta.setDisplayName(ChatColor.AQUA + "Cycle Particle Density");
-            if (areaDensity == 0) ptDenMeta.addEnchant(Enchantment.DURABILITY, 1, true);
+            if (areaDensity > 0) ptDenMeta.addEnchant(Enchantment.DURABILITY, 1, true);
             ptDensity.setItemMeta(ptDenMeta);
         }
         gui.setItem(4, ptDensity);
@@ -578,6 +612,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         ItemMeta delMeta = delete.getItemMeta();
         if (delMeta != null) {
             delMeta.setDisplayName(ChatColor.RED + "Delete This Area");
+            if (buildAreas.contains(area)) delMeta.addEnchant(Enchantment.DURABILITY, 1, true);
             delete.setItemMeta(delMeta);
         }
         gui.setItem(8, delete);
@@ -599,29 +634,32 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
         gui.setItem(26, forceRegen);
 
         admin.openInventory(gui);
-        editingArea.put(admin.getUniqueId(), area);
+        openGUIs.put(admin.getUniqueId(), GUIType.ADMIN);
+        adminEditingArea.put(admin.getUniqueId(), area);
     }
 
-    private final Map<UUID, Area> editingArea = new HashMap<>();
+    private final Map<UUID, Area> adminEditingArea = new HashMap<>();
 
     @EventHandler
     public void onAdminAreaEditClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player admin)) return;
         if (!event.getView().getTitle().startsWith(ChatColor.RED + "Edit Area: ")) return;
         event.setCancelled(true);
-        Area area = editingArea.get(admin.getUniqueId());
+        Area area = adminEditingArea.get(admin.getUniqueId());
         if (area == null) return;
         int slot = event.getRawSlot();
         switch (slot) {
             case 0 -> { // Set Corner 1
                 area.corner1 = admin.getLocation();
                 admin.sendMessage(ChatColor.GREEN + "Corner 1 set to your location.");
-                saveData();
+                saveDataAsync();
+                Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
             }
             case 1 -> { // Set Corner 2
                 area.corner2 = admin.getLocation();
                 admin.sendMessage(ChatColor.GREEN + "Corner 2 set to your location.");
-                saveData();
+                saveDataAsync();
+                Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
             }
             case 2 -> { // Rename
                 admin.closeInventory();
@@ -633,57 +671,33 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
                 idx = (idx + 1) % availableParticles.size();
                 areaParticleType.put(area, availableParticles.get(idx));
                 admin.sendMessage(ChatColor.AQUA + "Particle type set to: " + availableParticles.get(idx).name());
-                saveData();
+                saveDataAsync();
+                refreshPlayerGUI(area.owner);
+                Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
             }
             case 4 -> { // Cycle particle density
                 int density = areaParticleDensity.getOrDefault(area, 2);
                 density = (density % 3) + 1;
                 areaParticleDensity.put(area, density);
                 admin.sendMessage(ChatColor.AQUA + "Particle density set to: " + (density == 1 ? "Low" : density == 2 ? "Medium" : "High"));
-                saveData();
-            }
-            case 5 -> { // Teleport to corner 1
-                admin.teleport(area.corner1);
-            }
-            case 6 -> { // Teleport to corner 2
-                admin.teleport(area.corner2);
-            }
-            case 7 -> { // Transfer ownership
-                admin.closeInventory();
-                admin.sendMessage(ChatColor.BLUE + "Type the new owner's player name in chat:");
-                adminTransferMode.put(admin.getUniqueId(), area);
+                saveDataAsync();
+                refreshPlayerGUI(area.owner);
+                Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
             }
             case 8 -> { // Delete
                 buildAreas.remove(area);
+                closeGUIsForArea(area);
                 admin.sendMessage(ChatColor.RED + "Area deleted.");
-                saveData();
+                saveDataAsync();
                 admin.closeInventory();
-                editingArea.remove(admin.getUniqueId());
+                adminEditingArea.remove(admin.getUniqueId());
                 Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaListGUI(admin), 2L);
             }
             case 18 -> { // Particles: Off
                 areaParticleDensity.put(area, 0);
                 admin.sendMessage(ChatColor.GRAY + "Particles turned off for this area.");
-                openAdminAreaEditGUI(admin, area);
-            }
-            case 25 -> openAdminConfigGUI(admin);
-            case 26 -> {
-                // Force regenerate all tracked blocks in this area
-                int count = 0;
-                Iterator<OreRecord> it = brokenOres.iterator();
-                while (it.hasNext()) {
-                    OreRecord rec = it.next();
-                    Location loc = rec.getLocation();
-                    if (area.contains(loc)) {
-                        Block block = loc.getBlock();
-                        if (block.getType() == Material.AIR) {
-                            block.setType(rec.type);
-                            count++;
-                        }
-                        it.remove();
-                    }
-                }
-                admin.sendMessage(ChatColor.GREEN + "Force regenerated " + count + " blocks in this area.");
+                refreshPlayerGUI(area.owner);
+                Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
             }
         }
     }
@@ -709,15 +723,28 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
             event.setCancelled(true);
             String newOwnerName = event.getMessage().trim();
             Area area = adminTransferMode.remove(uuid);
-            OfflinePlayer newOwner = Bukkit.getOfflinePlayer(newOwnerName);
-            if (newOwner.getUniqueId().equals(area.owner)) {
-                player.sendMessage(ChatColor.RED + "This area is already owned by " + newOwner.getName());
+            OfflinePlayer newOwner = null;
+            for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
+                String opName = op.getName();
+                if (opName != null && opName.equalsIgnoreCase(newOwnerName)) {
+                    newOwner = op;
+                    break;
+                }
+            }
+            if (newOwner == null) {
+                player.sendMessage(ChatColor.RED + "Player not found: " + newOwnerName);
                 return;
             }
             area.owner = newOwner.getUniqueId();
             player.sendMessage(ChatColor.GREEN + "Area ownership transferred to: " + ChatColor.AQUA + newOwner.getName());
             saveData();
             Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(player, area), 2L);
+        } else if (areaNames.containsKey(uuid)) {
+            event.setCancelled(true);
+            String newName = event.getMessage().trim();
+            areaNames.put(uuid, newName);
+            player.sendMessage(ChatColor.GREEN + "Area name set to: " + ChatColor.AQUA + newName);
+            Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
         }
     }
 
@@ -735,5 +762,197 @@ public class OreRegenPlugin extends JavaPlugin implements Listener, TabExecutor 
             return Arrays.asList("list", "edit", "delete");
         }
         return Collections.emptyList();
+    }
+
+    // Debug command for plugin stats
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (command.getName().equalsIgnoreCase("oregendebug")) {
+            sender.sendMessage(ChatColor.GOLD + "[OreRegen] Debug Info:");
+            sender.sendMessage(ChatColor.YELLOW + "Build Areas: " + buildAreas.size());
+            sender.sendMessage(ChatColor.YELLOW + "Tracked Ores: " + brokenOres.size());
+            sender.sendMessage(ChatColor.YELLOW + "Online Players: " + Bukkit.getOnlinePlayers().size());
+            sender.sendMessage(ChatColor.YELLOW + "Particle Density Map: " + particleDensity.size());
+            sender.sendMessage(ChatColor.YELLOW + "Particle Type Map: " + particleType.size());
+            return true;
+        }
+        return false;
+    }
+
+    // Prevent item pickup/movement in player GUI
+    @EventHandler
+    public void onBuildAreaGUIClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (!event.getView().getTitle().equals(ChatColor.GOLD + "Build Area Manager")) return;
+        event.setCancelled(true);
+        int slot = event.getRawSlot();
+        UUID uuid = player.getUniqueId();
+        switch (slot) {
+            case 10 -> { // Set Corners (Wand)
+                ItemStack wand = new ItemStack(Material.STICK);
+                ItemMeta meta = wand.getItemMeta();
+                if (meta != null) {
+                    meta.setDisplayName(ChatColor.GREEN + "ResourceRegen Wand");
+                    meta.setLore(Arrays.asList(ChatColor.YELLOW + "Left click: Set Corner 1", ChatColor.YELLOW + "Right click: Set Corner 2"));
+                    wand.setItemMeta(meta);
+                }
+                player.getInventory().addItem(wand);
+                selectingCorners.add(uuid);
+                player.closeInventory();
+                player.sendMessage(ChatColor.AQUA + "You received the ResourceRegen Wand! Left/right click blocks to set corners.");
+            }
+            case 12 -> { // Name Area
+                player.closeInventory();
+                player.sendMessage(ChatColor.YELLOW + "Type the area name in chat:");
+                areaNames.put(uuid, ""); // Start naming mode
+            }
+            case 14 -> { // Save Area
+                Location c1 = selection1.get(uuid);
+                Location c2 = selection2.get(uuid);
+                String name = areaNames.getOrDefault(uuid, "");
+                if (c1 == null || c2 == null || name.isEmpty()) {
+                    player.sendMessage(ChatColor.RED + "Set both corners and name before saving.");
+                    return;
+                }
+                if (!canAddArea(uuid)) {
+                    player.sendMessage(ChatColor.RED + "You have reached the maximum number of build areas.");
+                    return;
+                }
+                buildAreas.add(new Area(uuid, name, c1, c2));
+                player.sendMessage(ChatColor.GREEN + "Area saved: " + ChatColor.AQUA + name);
+                selection1.remove(uuid);
+                selection2.remove(uuid);
+                areaNames.remove(uuid);
+                player.closeInventory();
+            }
+            case 13 -> { // Show Area Outline
+                Area temp = new Area(uuid, "Preview", selection1.get(uuid), selection2.get(uuid));
+                showAreaParticles(player, temp);
+                player.sendMessage(ChatColor.LIGHT_PURPLE + "Area outline previewed.");
+            }
+            case 18 -> { // Particle Density Low
+                particleDensity.put(uuid, 1);
+                player.sendMessage(ChatColor.GRAY + "Particle density set to low.");
+                refreshAdminGUI(getPlayerArea(uuid));
+                Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 19 -> { // Particle Density Medium
+                particleDensity.put(uuid, 2);
+                player.sendMessage(ChatColor.GRAY + "Particle density set to medium.");
+                refreshAdminGUI(getPlayerArea(uuid));
+                Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 20 -> { // Particle Density High
+                particleDensity.put(uuid, 3);
+                player.sendMessage(ChatColor.GRAY + "Particle density set to high.");
+                refreshAdminGUI(getPlayerArea(uuid));
+                Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 21, 22 -> { // Particle Type
+                int idx = slot - 21;
+                if (idx >= 0 && idx < availableParticles.size()) {
+                    particleType.put(uuid, availableParticles.get(idx));
+                    player.sendMessage(ChatColor.AQUA + "Particle type set to: " + availableParticles.get(idx).name());
+                    refreshAdminGUI(getPlayerArea(uuid));
+                }
+                Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 23 -> { // Particles Off
+                particleDensity.put(uuid, 0);
+                player.sendMessage(ChatColor.GRAY + "Particles turned off.");
+                refreshAdminGUI(getPlayerArea(uuid));
+                Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 26 -> { // Delete Area
+                Area area = getPlayerArea(uuid);
+                if (area != null) {
+                    buildAreas.remove(area);
+                    closeGUIsForArea(area);
+                    player.sendMessage(ChatColor.RED + "Your build area has been deleted.");
+                }
+                player.closeInventory();
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPlayerInteract(org.bukkit.event.player.PlayerInteractEvent event) {
+        Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+        if (!selectingCorners.contains(uuid)) return;
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item == null || item.getType() != Material.STICK) return;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null || !(ChatColor.GREEN + "ResourceRegen Wand").equals(meta.getDisplayName())) return;
+        if (event.getAction() == org.bukkit.event.block.Action.LEFT_CLICK_BLOCK) {
+            selection1.put(uuid, event.getClickedBlock().getLocation());
+            player.sendMessage(ChatColor.GREEN + "Corner 1 set to: " + locString(event.getClickedBlock().getLocation()));
+            event.setCancelled(true);
+        } else if (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
+            selection2.put(uuid, event.getClickedBlock().getLocation());
+            player.sendMessage(ChatColor.GREEN + "Corner 2 set to: " + locString(event.getClickedBlock().getLocation()));
+            event.setCancelled(true);
+        } else {
+            return;
+        }
+        // If both corners are set, remove wand and exit mode
+        if (selection1.containsKey(uuid) && selection2.containsKey(uuid)) {
+            player.getInventory().remove(item);
+            selectingCorners.remove(uuid);
+            player.sendMessage(ChatColor.AQUA + "Both corners set! You can now name and save your area.");
+            Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+        }
+    }
+
+    private String locString(Location loc) {
+        return loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ();
+    }
+
+    // --- GUI tracking for synchronization ---
+    private enum GUIType { PLAYER, ADMIN }
+    private final Map<UUID, GUIType> openGUIs = new HashMap<>(); // Tracks which GUI is open for each player
+    private final Map<UUID, Area> adminEditingArea = new HashMap<>(); // Tracks which area each admin is editing
+
+    // Utility: Check if a player has a GUI open
+    private boolean isGUIOpen(Player p, GUIType type) {
+        return openGUIs.getOrDefault(p.getUniqueId(), null) == type;
+    }
+
+    // Utility: Refresh player GUI if open
+    private void refreshPlayerGUI(UUID playerId) {
+        Player p = Bukkit.getPlayer(playerId);
+        if (p != null && isGUIOpen(p, GUIType.PLAYER)) {
+            Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(p), 2L);
+        }
+    }
+    // Utility: Refresh admin GUI if open for a specific area
+    private void refreshAdminGUI(Area area) {
+        for (Map.Entry<UUID, Area> entry : adminEditingArea.entrySet()) {
+            if (entry.getValue() == area) {
+                Player admin = Bukkit.getPlayer(entry.getKey());
+                if (admin != null && isGUIOpen(admin, GUIType.ADMIN)) {
+                    Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
+                }
+            }
+        }
+    }
+    // Utility: Close GUIs for area deletion
+    private void closeGUIsForArea(Area area) {
+        // Close admin GUIs
+        for (Map.Entry<UUID, Area> entry : adminEditingArea.entrySet()) {
+            if (entry.getValue() == area) {
+                Player admin = Bukkit.getPlayer(entry.getKey());
+                if (admin != null && isGUIOpen(admin, GUIType.ADMIN)) {
+                    admin.closeInventory();
+                    admin.sendMessage(ChatColor.RED + "Area deleted. GUI closed.");
+                }
+            }
+        }
+        // Close player GUI if owner is online and has it open
+        Player owner = Bukkit.getPlayer(area.owner);
+        if (owner != null && isGUIOpen(owner, GUIType.PLAYER)) {
+            owner.closeInventory();
+            owner.sendMessage(ChatColor.RED + "Your build area has been deleted. GUI closed.");
+        }
     }
 }

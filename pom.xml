@@ -3,11 +3,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.example</groupId>
-    <artifactId>oregen</artifactId>
-    <version>1.4</version>
+    <artifactId>resourceregen</artifactId>
+    <version>1.1.1</version>
     <packaging>jar</packaging>
-    <name>OreRegen</name>
-    <description>Spigot plugin for ore regeneration and build area protection by LtHans</description>
+    <name>ResourceRegen</name>
+    <description>Spigot plugin for resource regeneration and build area protection by LtHans</description>
     <developers>
         <developer>
             <id>LtHans</id>

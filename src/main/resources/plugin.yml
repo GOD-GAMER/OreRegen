@@ -1,6 +1,6 @@
-name: OreRegen
+name: ResourceRegen
 main: com.example.oregen.OreRegenPlugin
-version: 1.4
+version: 1.0.0
 authors:
   - LtHans
 api-version: 1.20
