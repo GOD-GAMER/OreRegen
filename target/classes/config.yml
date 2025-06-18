@@ -1,0 +1,14 @@
+# OreRegen Plugin Configuration
+# Adjust these values to optimize performance for your server.
+
+particle:
+  default-density: medium   # Options: low, medium, high
+  update-interval: 60       # Ticks between particle updates (20 ticks = 1 second)
+  show-to-owners-only: true
+
+regeneration:
+  batch-size: 2            # Number of blocks to regenerate per tick
+  save-interval: 6000      # Ticks between automatic data saves (5 minutes)
+
+data:
+  unload-offline-areas: true

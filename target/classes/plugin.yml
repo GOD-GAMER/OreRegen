@@ -1,0 +1,13 @@
+name: OreRegen
+main: com.example.oregen.OreRegenPlugin
+version: 1.4
+authors:
+  - LtHans
+api-version: 1.20
+commands:
+  buildarea:
+    description: Open the build area management GUI
+    usage: /buildarea
+  buildareaadmin:
+    description: Open the admin build area management GUI
+    usage: /buildareaadmin
