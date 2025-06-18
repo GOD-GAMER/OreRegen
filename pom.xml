@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.example</groupId>
     <artifactId>resourceregen</artifactId>
-    <version>1.1.2</version>
+    <version>1.1.4</version>
     <packaging>jar</packaging>
     <name>ResourceRegen</name>
     <description>Spigot plugin for resource regeneration and build area protection by LtHans</description>

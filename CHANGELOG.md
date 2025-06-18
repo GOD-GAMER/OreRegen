@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] - 2025-06-18
+### Fixed
+- Fixed ArrayIndexOutOfBoundsException in player GUI by adding paginated particle selection
+
+## [1.1.3] - 2025-06-18
+### Fixed
+- Updated plugin.yml version to 1.1.3 to match code and Maven version
+- Ensured build and deployment instructions are clear to prevent internal errors when opening GUIs
+
 ## [1.1.2] - 2025-06-18
 ### Fixed
 - Removed invalid particle (FIREWORK) for Spigot 1.20+ compatibility

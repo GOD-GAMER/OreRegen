@@ -109,6 +109,10 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
     // Track players in corner selection mode
     private final Set<UUID> selectingCorners = new HashSet<>();
 
+    // Track current particle page per player
+    private final Map<UUID, Integer> particlePage = new HashMap<>();
+    private static final int PARTICLES_PER_PAGE = 5;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -366,6 +370,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             player.sendMessage(ChatColor.RED + "You have reached the maximum number of build areas (" + maxAreasPerPlayer + ").");
             return;
         }
+        int page = particlePage.getOrDefault(player.getUniqueId(), 0);
         Inventory gui = Bukkit.createInventory(null, 27, ChatColor.GOLD + "Build Area Manager");
         // Border with black stained glass
         ItemStack border = new ItemStack(Material.BLACK_STAINED_GLASS_PANE);
@@ -444,10 +449,13 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             densityHigh.setItemMeta(dHighMeta);
         }
         gui.setItem(20, densityHigh);
-        // Particle type options
+        // Particle type options (paginated)
         int slot = 21;
+        int startIdx = page * PARTICLES_PER_PAGE;
+        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, availableParticles.size());
         Particle currentType = particleType.getOrDefault(player.getUniqueId(), Particle.FLAME);
-        for (Particle pt : availableParticles) {
+        for (int i = startIdx; i < endIdx; i++) {
+            Particle pt = availableParticles.get(i);
             ItemStack ptItem = new ItemStack(Material.FIREWORK_STAR);
             ItemMeta ptMeta = ptItem.getItemMeta();
             if (ptMeta != null) {
@@ -457,6 +465,25 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 ptItem.setItemMeta(ptMeta);
             }
             gui.setItem(slot++, ptItem);
+        }
+        // Page navigation buttons
+        if (page > 0) {
+            ItemStack prev = new ItemStack(Material.ARROW);
+            ItemMeta prevMeta = prev.getItemMeta();
+            if (prevMeta != null) {
+                prevMeta.setDisplayName(ChatColor.YELLOW + "Previous Page");
+                prev.setItemMeta(prevMeta);
+            }
+            gui.setItem(24, prev);
+        }
+        if (endIdx < availableParticles.size()) {
+            ItemStack next = new ItemStack(Material.ARROW);
+            ItemMeta nextMeta = next.getItemMeta();
+            if (nextMeta != null) {
+                nextMeta.setDisplayName(ChatColor.YELLOW + "Next Page");
+                next.setItemMeta(nextMeta);
+            }
+            gui.setItem(25, next);
         }
         // Particles Off button
         ItemStack off = new ItemStack(Material.BARRIER);
@@ -863,6 +890,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         int slot = event.getRawSlot();
         UUID uuid = player.getUniqueId();
+        int page = particlePage.getOrDefault(uuid, 0);
+        int startIdx = page * PARTICLES_PER_PAGE;
+        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, availableParticles.size());
         switch (slot) {
             case 10 -> { // Set Corners (Wand)
                 ItemStack wand = new ItemStack(Material.STICK);
@@ -938,6 +968,18 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 player.sendMessage(ChatColor.GRAY + "Particles turned off.");
                 refreshAdminGUI(getPlayerArea(uuid));
                 Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+            }
+            case 24 -> { // Previous Page
+                if (page > 0) {
+                    particlePage.put(uuid, page - 1);
+                    Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+                }
+            }
+            case 25 -> { // Next Page
+                if (endIdx < availableParticles.size()) {
+                    particlePage.put(uuid, page + 1);
+                    Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
+                }
             }
             case 26 -> { // Delete Area
                 Area area = getPlayerArea(uuid);

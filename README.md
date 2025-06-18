@@ -1,6 +1,6 @@
 # ResourceRegen Spigot Plugin
 
-![ResourceRegen Banner](https://img.shields.io/badge/Minecraft-1.20%2B-green?style=for-the-badge) ![Java 17+](https://img.shields.io/badge/Java-17%2B-blue?style=for-the-badge) ![Version](https://img.shields.io/badge/Version-1.1.0-orange?style=for-the-badge)
+![ResourceRegen Banner](https://img.shields.io/badge/Minecraft-1.20%2B-green?style=for-the-badge) ![Java 17+](https://img.shields.io/badge/Java-17%2B-blue?style=for-the-badge) ![Version](https://img.shields.io/badge/Version-1.1.4-orange?style=for-the-badge)
 
 > **ResourceRegen** is a powerful, modern Minecraft 1.20+ Spigot plugin for protected build areas, customizable particles, and advanced resource regeneration. All features are managed through beautiful, intuitive GUIs for both players and admins.
 
