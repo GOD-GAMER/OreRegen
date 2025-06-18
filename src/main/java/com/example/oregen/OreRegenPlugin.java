@@ -3,6 +3,7 @@
  * Author: LtHans
  * License: MIT
  * Year: 2025
+ * Version: 1.1.5 (bug fix release)
  */
 
 package com.example.oregen;
@@ -159,7 +160,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        saveDataAsync(); // Use async save
+        saveData(); // Use sync save to ensure data is written before shutdown
     }
 
     // Block break event (track all blocks outside build areas)
@@ -224,7 +225,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 || z - minZ <= distance || maxZ - z <= distance;
     }
 
-    // Show area outline with super dense flame particles, filling all 6 faces from bedrock to build limit
+    // Rebuilt: Show area outline with particles on all 6 faces, from bedrock to build limit
     private void showAreaParticles(Player p, Area area) {
         int density = particleDensity.getOrDefault(p.getUniqueId(), 2); // Default medium
         if (density == 0) return; // Off
@@ -238,30 +239,27 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         int maxZ = Math.max(area.corner1.getBlockZ(), area.corner2.getBlockZ());
         World w = p.getWorld();
         int particleCount = 0;
-        // Top and bottom faces
+        // Top and bottom faces (Y = minY and maxY)
         for (int x = minX; x <= maxX; x += step) {
             for (int z = minZ; z <= maxZ; z += step) {
                 if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, x + 0.5, minY + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, x + 0.5, maxY + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
+                w.spawnParticle(pt, x + 0.5, minY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(pt, x + 0.5, maxY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
                 particleCount += 2;
             }
         }
-        // Side faces (minX, maxX)
-        for (int y = minY; y <= maxY; y += step) {
-            for (int z = minZ; z <= maxZ; z += step) {
-                if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, minX + 0.5, y + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, maxX + 0.5, y + 0.5, z + 0.5, 2, 0, 0, 0, 0, null);
-                particleCount += 2;
-            }
-        }
-        // Side faces (minZ, maxZ)
+        // Four vertical faces (X = minX, X = maxX, Z = minZ, Z = maxZ)
         for (int y = minY; y <= maxY; y += step) {
             for (int x = minX; x <= maxX; x += step) {
                 if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, x + 0.5, y + 0.5, minZ + 0.5, 2, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, x + 0.5, y + 0.5, maxZ + 0.5, 2, 0, 0, 0, 0, null);
+                w.spawnParticle(pt, x + 0.5, y + 0.5, minZ + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(pt, x + 0.5, y + 0.5, maxZ + 0.5, 1, 0, 0, 0, 0, null);
+                particleCount += 2;
+            }
+            for (int z = minZ + step; z <= maxZ - step; z += step) { // Avoid corners twice
+                if (particleCount >= maxParticlesPerPlayer) return;
+                w.spawnParticle(pt, minX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(pt, maxX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
                 particleCount += 2;
             }
         }
@@ -1072,5 +1070,11 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             owner.closeInventory();
             owner.sendMessage(ChatColor.RED + "Your build area has been deleted. GUI closed.");
         }
+    }
+
+    // Save data when a player leaves the server
+    @EventHandler
+    public void onPlayerQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+        saveDataAsync();
     }
 }
