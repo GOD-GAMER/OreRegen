@@ -1,6 +1,6 @@
 name: ResourceRegen
 main: com.example.oregen.OreRegenPlugin
-version: 1.1.6 # Bug fix update
+version: 1.2.0 # Major feature update
 authors:
   - LtHans
 api-version: 1.20
