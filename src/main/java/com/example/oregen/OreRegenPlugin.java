@@ -30,6 +30,19 @@ import org.bukkit.enchantments.Enchantment;
 
 public class OreRegenPlugin extends JavaPlugin implements Listener {
 
+    // List of 9 selectable particles for border visualization
+    private static final List<Particle> SELECTABLE_PARTICLES = Arrays.asList(
+        Particle.FLAME,
+        Particle.VILLAGER_HAPPY,
+        Particle.REDSTONE,
+        Particle.HEART,
+        Particle.CLOUD,
+        Particle.CRIT,
+        Particle.END_ROD,
+        Particle.NOTE,
+        Particle.PORTAL
+    );
+
     // Data structures
     private static class Area implements Serializable {
         UUID owner;
@@ -87,23 +100,13 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
 
     // Particle settings per player
     private final Map<UUID, Integer> particleDensity = new HashMap<>(); // 1=Low, 2=Medium, 3=High
-    private final Map<UUID, Particle> particleType = new HashMap<>();
-    private final List<Particle> availableParticles = Arrays.asList(
-        Particle.FLAME, Particle.VILLAGER_HAPPY, Particle.REDSTONE, Particle.HEART, Particle.CLOUD, Particle.CRIT,
-        Particle.END_ROD, Particle.NOTE, Particle.SOUL, Particle.SOUL_FIRE_FLAME, Particle.SPELL_WITCH, Particle.TOTEM,
-        Particle.PORTAL, Particle.DRAGON_BREATH, Particle.LAVA, Particle.WATER_SPLASH, Particle.SNOWBALL
-    );
-
-    // Per-area particle type and density settings
-    private final Map<Area, Particle> areaParticleType = new HashMap<>();
-    private final Map<Area, Integer> areaParticleDensity = new HashMap<>();
+    private final Map<UUID, Integer> playerParticleIndex = new HashMap<>(); // Store the selected particle index (0-8) for each player
 
     // Optimization config values
     private int particleUpdateInterval;
     private boolean showParticlesToOwnersOnly;
     private int regenBatchSize;
     private int saveInterval;
-    private int maxParticlesPerPlayer;
     private int maxTrackedBlocks;
     private int maxAreasPerPlayer;
 
@@ -122,7 +125,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         showParticlesToOwnersOnly = getConfig().getBoolean("particle.show-to-owners-only", true);
         regenBatchSize = getConfig().getInt("regeneration.batch-size", 2);
         saveInterval = getConfig().getInt("regeneration.save-interval", 6000);
-        maxParticlesPerPlayer = getConfig().getInt("particle.max-particles-per-player", 500);
         maxTrackedBlocks = getConfig().getInt("regeneration.max-tracked-blocks", 10000);
         maxAreasPerPlayer = getConfig().getInt("area.max-areas-per-player", 3);
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -183,7 +185,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         Location loc = p.getLocation();
         boolean inside = area.contains(loc);
         if (inside) {
-            showAreaParticles(p, area);
+            int idx = playerParticleIndex.getOrDefault(p.getUniqueId(), 0);
+            Particle particle = SELECTABLE_PARTICLES.get(idx);
+            showAreaParticles(p, area, particle);
             if (!playersInArea.contains(p.getUniqueId())) {
                 p.sendMessage(ChatColor.YELLOW + "You entered: " + ChatColor.AQUA + area.name);
                 playersInArea.add(p.getUniqueId());
@@ -226,10 +230,11 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
     }
 
     // Rebuilt: Show area outline with particles on all 6 faces, from bedrock to build limit
-    private void showAreaParticles(Player p, Area area) {
+    // Remove old showAreaParticles method and replace with new one using SELECTABLE_PARTICLES
+    // New method: showAreaParticles(Player p, Area area, Particle particle)
+    private void showAreaParticles(Player p, Area area, Particle particle) {
         int density = particleDensity.getOrDefault(p.getUniqueId(), 2); // Default medium
         if (density == 0) return; // Off
-        Particle pt = particleType.getOrDefault(p.getUniqueId(), Particle.FLAME);
         int step = (density == 1) ? 4 : (density == 2) ? 2 : 1;
         int minX = Math.min(area.corner1.getBlockX(), area.corner2.getBlockX());
         int maxX = Math.max(area.corner1.getBlockX(), area.corner2.getBlockX());
@@ -242,24 +247,21 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         // Top and bottom faces (Y = minY and maxY)
         for (int x = minX; x <= maxX; x += step) {
             for (int z = minZ; z <= maxZ; z += step) {
-                if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, x + 0.5, minY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, x + 0.5, maxY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(particle, x + 0.5, minY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(particle, x + 0.5, maxY + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
                 particleCount += 2;
             }
         }
         // Four vertical faces (X = minX, X = maxX, Z = minZ, Z = maxZ)
         for (int y = minY; y <= maxY; y += step) {
             for (int x = minX; x <= maxX; x += step) {
-                if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, x + 0.5, y + 0.5, minZ + 0.5, 1, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, x + 0.5, y + 0.5, maxZ + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(particle, x + 0.5, y + 0.5, minZ + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(particle, x + 0.5, y + 0.5, maxZ + 0.5, 1, 0, 0, 0, 0, null);
                 particleCount += 2;
             }
-            for (int z = minZ + step; z <= maxZ - step; z += step) { // Avoid corners twice
-                if (particleCount >= maxParticlesPerPlayer) return;
-                w.spawnParticle(pt, minX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
-                w.spawnParticle(pt, maxX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+            for (int z = minZ + step; z <= maxZ - step; z += step) {
+                w.spawnParticle(particle, minX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
+                w.spawnParticle(particle, maxX + 0.5, y + 0.5, z + 0.5, 1, 0, 0, 0, 0, null);
                 particleCount += 2;
             }
         }
@@ -297,7 +299,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 if (showParticlesToOwnersOnly && !p.hasPermission("oregen.admin") && !area.owner.equals(p.getUniqueId())) continue;
                 Location loc = p.getLocation();
                 if (area.contains(loc) || isNearAreaBoundary(loc, area, 3)) {
-                    showAreaParticles(p, area);
+                    int idx = playerParticleIndex.getOrDefault(p.getUniqueId(), 0);
+                    Particle particle = SELECTABLE_PARTICLES.get(idx);
+                    showAreaParticles(p, area, particle);
                 }
             }
         }, 20, particleUpdateInterval);
@@ -342,7 +346,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         buildAreas.removeIf(area -> !online.contains(area.owner));
         // Optionally, also clear per-player settings
         particleDensity.keySet().removeIf(uuid -> !online.contains(uuid));
-        particleType.keySet().removeIf(uuid -> !online.contains(uuid));
+        playerParticleIndex.keySet().removeIf(uuid -> !online.contains(uuid));
         selection1.keySet().removeIf(uuid -> !online.contains(uuid));
         selection2.keySet().removeIf(uuid -> !online.contains(uuid));
     }
@@ -450,10 +454,10 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         // Particle type options (paginated)
         int slot = 21;
         int startIdx = page * PARTICLES_PER_PAGE;
-        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, availableParticles.size());
-        Particle currentType = particleType.getOrDefault(player.getUniqueId(), Particle.FLAME);
+        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, SELECTABLE_PARTICLES.size());
+        Particle currentType = playerParticleIndex.getOrDefault(player.getUniqueId(), Particle.FLAME);
         for (int i = startIdx; i < endIdx; i++) {
-            Particle pt = availableParticles.get(i);
+            Particle pt = SELECTABLE_PARTICLES.get(i);
             ItemStack ptItem = new ItemStack(Material.FIREWORK_STAR);
             ItemMeta ptMeta = ptItem.getItemMeta();
             if (ptMeta != null) {
@@ -474,7 +478,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             }
             gui.setItem(24, prev);
         }
-        if (endIdx < availableParticles.size()) {
+        if (endIdx < SELECTABLE_PARTICLES.size()) {
             ItemStack next = new ItemStack(Material.ARROW);
             ItemMeta nextMeta = next.getItemMeta();
             if (nextMeta != null) {
@@ -504,6 +508,42 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             delete.setItemMeta(delMeta);
         }
         gui.setItem(26, delete);
+
+        // Add 9 items for the 9 particle selection options
+        for (int i = 0; i < SELECTABLE_PARTICLES.size(); i++) {
+            Particle particle = SELECTABLE_PARTICLES.get(i);
+            Material icon;
+            switch (particle) {
+                case FLAME -> icon = Material.BLAZE_POWDER;
+                case VILLAGER_HAPPY -> icon = Material.EMERALD;
+                case REDSTONE -> icon = Material.REDSTONE;
+                case HEART -> icon = Material.APPLE;
+                case CLOUD -> icon = Material.WHITE_WOOL;
+                case CRIT -> icon = Material.IRON_SWORD;
+                case END_ROD -> icon = Material.END_ROD;
+                case NOTE -> icon = Material.NOTE_BLOCK;
+                case PORTAL -> icon = Material.ENDER_PEARL;
+                default -> icon = Material.FIREWORK_STAR;
+            }
+            ItemStack item = new ItemStack(icon);
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(ChatColor.AQUA + particle.name());
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Click to select this particle!");
+                // Add a highlight if this is the selected particle
+                int selectedIdx = playerParticleIndex.getOrDefault(player.getUniqueId(), 0);
+                if (i == selectedIdx) {
+                    lore.add(ChatColor.GREEN + "(Selected)");
+                    meta.addEnchant(Enchantment.DURABILITY, 1, true);
+                    meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS);
+                }
+                meta.setLore(lore);
+                item.setItemMeta(meta);
+            }
+            gui.setItem(27 + i, item); // Place in slots 27-35
+        }
+
         player.openInventory(gui);
         openGUIs.put(player.getUniqueId(), GUIType.PLAYER);
     }
@@ -734,10 +774,10 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 adminRenameMode.put(admin.getUniqueId(), area);
             }
             case 3 -> { // Cycle particle type
-                int idx = availableParticles.indexOf(areaParticleType.getOrDefault(area, Particle.FLAME));
-                idx = (idx + 1) % availableParticles.size();
-                areaParticleType.put(area, availableParticles.get(idx));
-                admin.sendMessage(ChatColor.AQUA + "Particle type set to: " + availableParticles.get(idx).name());
+                int idx = playerParticleIndex.getOrDefault(area.owner, 0);
+                idx = (idx + 1) % SELECTABLE_PARTICLES.size();
+                playerParticleIndex.put(area.owner, idx);
+                admin.sendMessage(ChatColor.AQUA + "Particle type set to: " + SELECTABLE_PARTICLES.get(idx).name());
                 saveDataAsync();
                 refreshPlayerGUI(area.owner);
                 Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(admin, area), 2L);
@@ -771,7 +811,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
 
     // Admin rename/transfer mode tracking
     private final Map<UUID, Area> adminRenameMode = new HashMap<>();
-    private final Map<UUID, Area> adminTransferMode = new HashMap<>();
 
     // Chat handler for area naming and admin commands
     @EventHandler
@@ -784,26 +823,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             Area area = adminRenameMode.remove(uuid);
             area.name = newName;
             player.sendMessage(ChatColor.GREEN + "Area renamed to: " + ChatColor.AQUA + newName);
-            saveData();
-            Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(player, area), 2L);
-        } else if (adminTransferMode.containsKey(uuid)) {
-            event.setCancelled(true);
-            String newOwnerName = event.getMessage().trim();
-            Area area = adminTransferMode.remove(uuid);
-            OfflinePlayer newOwner = null;
-            for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
-                String opName = op.getName();
-                if (opName != null && opName.equalsIgnoreCase(newOwnerName)) {
-                    newOwner = op;
-                    break;
-                }
-            }
-            if (newOwner == null) {
-                player.sendMessage(ChatColor.RED + "Player not found: " + newOwnerName);
-                return;
-            }
-            area.owner = newOwner.getUniqueId();
-            player.sendMessage(ChatColor.GREEN + "Area ownership transferred to: " + ChatColor.AQUA + newOwner.getName());
             saveData();
             Bukkit.getScheduler().runTaskLater(this, () -> openAdminAreaEditGUI(player, area), 2L);
         } else if (areaNames.containsKey(uuid)) {
@@ -874,7 +893,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.YELLOW + "Tracked Ores: " + brokenOres.size());
             sender.sendMessage(ChatColor.YELLOW + "Online Players: " + Bukkit.getOnlinePlayers().size());
             sender.sendMessage(ChatColor.YELLOW + "Particle Density Map: " + particleDensity.size());
-            sender.sendMessage(ChatColor.YELLOW + "Particle Type Map: " + particleType.size());
+            sender.sendMessage(ChatColor.YELLOW + "Particle Type Map: " + playerParticleIndex.size());
             return true;
         }
         return false;
@@ -890,7 +909,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         UUID uuid = player.getUniqueId();
         int page = particlePage.getOrDefault(uuid, 0);
         int startIdx = page * PARTICLES_PER_PAGE;
-        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, availableParticles.size());
+        int endIdx = Math.min(startIdx + PARTICLES_PER_PAGE, SELECTABLE_PARTICLES.size());
         switch (slot) {
             case 10 -> { // Set Corners (Wand)
                 ItemStack wand = new ItemStack(Material.STICK);
@@ -931,7 +950,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             }
             case 13 -> { // Show Area Outline
                 Area temp = new Area(uuid, "Preview", selection1.get(uuid), selection2.get(uuid));
-                showAreaParticles(player, temp);
+                int idx = playerParticleIndex.getOrDefault(player.getUniqueId(), 0);
+                Particle particle = SELECTABLE_PARTICLES.get(idx);
+                showAreaParticles(player, temp, particle);
                 player.sendMessage(ChatColor.LIGHT_PURPLE + "Area outline previewed.");
             }
             case 18 -> { // Particle Density Low
@@ -954,9 +975,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
             }
             case 21, 22 -> { // Particle Type
                 int idx = slot - 21;
-                if (idx >= 0 && idx < availableParticles.size()) {
-                    particleType.put(uuid, availableParticles.get(idx));
-                    player.sendMessage(ChatColor.AQUA + "Particle type set to: " + availableParticles.get(idx).name());
+                if (idx >= 0 && idx < SELECTABLE_PARTICLES.size()) {
+                    playerParticleIndex.put(uuid, idx);
+                    player.sendMessage(ChatColor.AQUA + "Particle type set to: " + SELECTABLE_PARTICLES.get(idx).name());
                     refreshAdminGUI(getPlayerArea(uuid));
                 }
                 Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
@@ -974,7 +995,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 }
             }
             case 25 -> { // Next Page
-                if (endIdx < availableParticles.size()) {
+                if (endIdx < SELECTABLE_PARTICLES.size()) {
                     particlePage.put(uuid, page + 1);
                     Bukkit.getScheduler().runTaskLater(this, () -> openBuildAreaGUI(player), 2L);
                 }
@@ -988,6 +1009,17 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 }
                 player.closeInventory();
             }
+            // Handle particle selection clicks
+            default -> {
+                if (slot >= 27 && slot < 27 + SELECTABLE_PARTICLES.size()) {
+                    int selectedIndex = slot - 27;
+                    playerParticleIndex.put(uuid, selectedIndex);
+                    player.sendMessage(ChatColor.AQUA + "Particle type set to: " + SELECTABLE_PARTICLES.get(selectedIndex).name());
+                    // Optionally, refresh the GUI or close it
+                    event.setCancelled(true);
+                    return;
+                }
+            }
         }
     }
 
@@ -1000,11 +1032,12 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         if (item == null || item.getType() != Material.STICK) return;
         ItemMeta meta = item.getItemMeta();
         if (meta == null || !(ChatColor.GREEN + "ResourceRegen Wand").equals(meta.getDisplayName())) return;
-        if (event.getAction() == org.bukkit.event.block.Action.LEFT_CLICK_BLOCK) {
+        // Add null check for event.getClickedBlock() in PlayerInteractEvent
+        if (event.getAction() == org.bukkit.event.block.Action.LEFT_CLICK_BLOCK && event.getClickedBlock() != null) {
             selection1.put(uuid, event.getClickedBlock().getLocation());
             player.sendMessage(ChatColor.GREEN + "Corner 1 set to: " + locString(event.getClickedBlock().getLocation()));
             event.setCancelled(true);
-        } else if (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
+        } else if (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK && event.getClickedBlock() != null) {
             selection2.put(uuid, event.getClickedBlock().getLocation());
             player.sendMessage(ChatColor.GREEN + "Corner 2 set to: " + locString(event.getClickedBlock().getLocation()));
             event.setCancelled(true);
@@ -1027,7 +1060,6 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
     // --- GUI tracking for synchronization ---
     private enum GUIType { PLAYER, ADMIN }
     private final Map<UUID, GUIType> openGUIs = new HashMap<>(); // Tracks which GUI is open for each player
-    // private final Map<UUID, Area> adminEditingArea = new HashMap<>(); // Tracks which area each admin is editing
 
     // Utility: Check if a player has a GUI open
     private boolean isGUIOpen(Player p, GUIType type) {
