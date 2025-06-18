@@ -88,7 +88,9 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, Integer> particleDensity = new HashMap<>(); // 1=Low, 2=Medium, 3=High
     private final Map<UUID, Particle> particleType = new HashMap<>();
     private final List<Particle> availableParticles = Arrays.asList(
-        Particle.FLAME, Particle.VILLAGER_HAPPY, Particle.REDSTONE, Particle.HEART, Particle.CLOUD, Particle.CRIT
+        Particle.FLAME, Particle.VILLAGER_HAPPY, Particle.REDSTONE, Particle.HEART, Particle.CLOUD, Particle.CRIT,
+        Particle.END_ROD, Particle.NOTE, Particle.SOUL, Particle.SOUL_FIRE_FLAME, Particle.SPELL_WITCH, Particle.TOTEM,
+        Particle.PORTAL, Particle.DRAGON_BREATH, Particle.LAVA, Particle.WATER_SPLASH, Particle.SNOWBALL
     );
 
     // Per-area particle type and density settings
@@ -502,8 +504,26 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
                 }
             }
             gui.setItem(slot++, item);
-            if (slot >= 54) break;
+            if (slot >= 45) break; // Reserve last row for admin controls
         }
+        // Force Regen All button
+        ItemStack forceRegenAll = new ItemStack(Material.DIAMOND_PICKAXE);
+        ItemMeta frMeta = forceRegenAll.getItemMeta();
+        if (frMeta != null) {
+            frMeta.setDisplayName(ChatColor.RED + "Force Regen All Resources");
+            frMeta.setLore(Collections.singletonList(ChatColor.GRAY + "Restore all tracked blocks outside build areas"));
+            forceRegenAll.setItemMeta(frMeta);
+        }
+        gui.setItem(45, forceRegenAll);
+        // Config button
+        ItemStack config = new ItemStack(Material.COMPARATOR);
+        ItemMeta configMeta = config.getItemMeta();
+        if (configMeta != null) {
+            configMeta.setDisplayName(ChatColor.BLUE + "Plugin Config");
+            configMeta.setLore(Collections.singletonList(ChatColor.GRAY + "Edit plugin settings"));
+            config.setItemMeta(configMeta);
+        }
+        gui.setItem(53, config);
         admin.openInventory(gui);
     }
 
@@ -514,6 +534,28 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
         if (!event.getView().getTitle().equals(ChatColor.DARK_RED + "All Build Areas")) return;
         event.setCancelled(true);
         int slot = event.getRawSlot();
+        if (slot == 45) { // Force Regen All
+            int count = 0;
+            Iterator<OreRecord> it = brokenOres.iterator();
+            while (it.hasNext()) {
+                OreRecord rec = it.next();
+                Location loc = rec.getLocation();
+                if (!isInAnyBuildArea(loc)) {
+                    Block block = loc.getBlock();
+                    if (block.getType() == Material.AIR) {
+                        block.setType(rec.type);
+                        count++;
+                    }
+                    it.remove();
+                }
+            }
+            admin.sendMessage(ChatColor.GREEN + "Force regenerated " + count + " blocks outside all build areas.");
+            return;
+        }
+        if (slot == 53) { // Config
+            openAdminConfigGUI(admin);
+            return;
+        }
         if (slot < 0 || slot >= buildAreas.size()) return;
         Area area = buildAreas.get(slot);
         openAdminAreaEditGUI(admin, area);
@@ -750,7 +792,41 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
 
     // Opens the admin config GUI (stub, expand as needed)
     private void openAdminConfigGUI(Player admin) {
-        admin.sendMessage(ChatColor.YELLOW + "[OreRegen] Config GUI is not yet implemented.");
+        Inventory gui = Bukkit.createInventory(null, 27, ChatColor.BLUE + "ResourceRegen Config");
+        // Example: Toggle particles for all, adjust batch size, etc.
+        ItemStack toggleParticles = new ItemStack(Material.BLAZE_POWDER);
+        ItemMeta toggleMeta = toggleParticles.getItemMeta();
+        if (toggleMeta != null) {
+            toggleMeta.setDisplayName(ChatColor.AQUA + "Show Particles to Owners Only: " + (showParticlesToOwnersOnly ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+            toggleMeta.setLore(Collections.singletonList(ChatColor.GRAY + "Click to toggle"));
+            toggleParticles.setItemMeta(toggleMeta);
+        }
+        gui.setItem(10, toggleParticles);
+        ItemStack batchSize = new ItemStack(Material.HOPPER);
+        ItemMeta batchMeta = batchSize.getItemMeta();
+        if (batchMeta != null) {
+            batchMeta.setDisplayName(ChatColor.YELLOW + "Regen Batch Size: " + regenBatchSize);
+            batchMeta.setLore(Collections.singletonList(ChatColor.GRAY + "Click to increase (max 20)"));
+            batchSize.setItemMeta(batchMeta);
+        }
+        gui.setItem(12, batchSize);
+        admin.openInventory(gui);
+    }
+    @EventHandler
+    public void onConfigGUIClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player admin)) return;
+        if (!event.getView().getTitle().equals(ChatColor.BLUE + "ResourceRegen Config")) return;
+        event.setCancelled(true);
+        int slot = event.getRawSlot();
+        if (slot == 10) {
+            showParticlesToOwnersOnly = !showParticlesToOwnersOnly;
+            admin.sendMessage(ChatColor.AQUA + "Show Particles to Owners Only: " + (showParticlesToOwnersOnly ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+            openAdminConfigGUI(admin);
+        } else if (slot == 12) {
+            regenBatchSize = Math.min(regenBatchSize + 1, 20);
+            admin.sendMessage(ChatColor.YELLOW + "Regen Batch Size set to: " + regenBatchSize);
+            openAdminConfigGUI(admin);
+        }
     }
 
     // Command tab completion
@@ -911,7 +987,7 @@ public class OreRegenPlugin extends JavaPlugin implements Listener {
     // --- GUI tracking for synchronization ---
     private enum GUIType { PLAYER, ADMIN }
     private final Map<UUID, GUIType> openGUIs = new HashMap<>(); // Tracks which GUI is open for each player
-    private final Map<UUID, Area> adminEditingArea = new HashMap<>(); // Tracks which area each admin is editing
+    // private final Map<UUID, Area> adminEditingArea = new HashMap<>(); // Tracks which area each admin is editing
 
     // Utility: Check if a player has a GUI open
     private boolean isGUIOpen(Player p, GUIType type) {
